@@ -103,9 +103,9 @@ static void* ComputeRows(void *p)
   dRealMutablePtr lambda       = params->lambda;
 
   /// THREAD_POSITION_CORRECTION
-  dRealPtr rhs_erp             = params->rhs_erp;
-  dRealMutablePtr caccel_erp   = params->caccel_erp;
-  dRealMutablePtr lambda_erp   = params->lambda_erp;
+  dRealPtr rhs_erp             = inline_position_correction ? params->rhs_erp : NULL;
+  dRealMutablePtr caccel_erp   = inline_position_correction ? params->caccel_erp : NULL;
+  dRealMutablePtr lambda_erp   = inline_position_correction ? params->lambda_erp : NULL;
 
 #ifdef REORDER_CONSTRAINTS
   dRealMutablePtr last_lambda  = params->last_lambda;
@@ -1425,148 +1425,70 @@ void quickstep::PGS_LCP (dxWorldProcessContext *context,
 }
 
 void quickstep::dxConeFrictionModel(dReal& lo_act, dReal& hi_act, dReal& lo_act_erp, dReal& hi_act_erp,
-    int *jb, dRealPtr J_orig, int index, int constraint_index, int startRow, int nRows,
-    const int nb, dxBody * const *body, int i, const IndexError *order, const int *findex,
+    int *jb, dRealPtr J_orig, int index, int constraint_index, int /*startRow*/, int /*nRows*/,
+    const int nb, dxBody * const *body, int /*i*/, const IndexError * /*order*/, const int * /*findex*/,
     dRealPtr /*lo*/, dRealPtr hi, dRealMutablePtr lambda, dRealMutablePtr lambda_erp)
 {
-  // This computes the corresponding hi_act and lo_act for friction constraints.
-  // For each contact, we have lambda_n, lambda_f1, and lambda_f2.
-  // Now couple the two friction and to satisfy the cone Coulomb friction  model
-  // tangential velocity at the contact frame:
-  // v_f1 = J_f1 * v
-  // v_f2 = J_f2 * v
-  // v_f1 = J(0:5)*v_b1_global + J(6:11)*v_b2_global,
-  // v_f2 = J2(0:5) * v_b1_global + J2(6:11)*v_b2_global
-  // v = sqrt(v_f1^2 + v_f2^2);
-  //
-  // if (v < eps)
-  //   lo_act_f1  = 0;
-  //   hi_act_f1  = 0;
-  //   lo_act_f2  = 0;
-  //   hi_act_f2  = 0;
-  // else
-  //   hi_act_f1 =  abs(v_f1) / v  *  (mu * lambda_n);
-  //   lo_act_f1 = - lo_act_f1;
-  //   hi_act_f2 =  abs(v_f2) / v  *  (mu * lambda_n);
-  //   lo_act_f2 = - lo_act_f2;
-  // end
-  //
-  dReal v_f1, v_f2, v;
-  v_f1 = 0.0; v_f2 = 0.0, v = 0.0;
-  int b1 = jb[index*2];
-  int b2 = jb[index*2+1];
-  int bodycounter = 0;
-  int ivel=0;
+  // Contact rows are stored as normal,tangent1,tangent2[,torsion]. The PGS
+  // solve order is not their storage order, and a solve chunk may split the
+  // pair. Locate both tangent Jacobians from the normal row, not order[i+/-1].
+  lo_act = hi_act = lo_act_erp = hi_act_erp = 0.0;
+  const int tangent = index - constraint_index;
+  if (constraint_index < 0 || (tangent != 1 && tangent != 2))
+  {
+    dMessage(d_ERR_LCP, "invalid cone friction tangent row");
+    return;
+  }
 
-  // J_ptr has been scaled! use J_orig_ptr here!
-  dRealPtr J_orig_ptr = J_orig + index*12;
+  const int b1 = jb[index*2];
+  const int b2 = jb[index*2+1];
+  if (b1 < -1 || b1 >= nb || b2 < -1 || b2 >= nb)
+  {
+    dMessage(d_ERR_LCP, "invalid cone friction body index");
+    return;
+  }
   dReal body1_vel[6];
   dReal body2_vel[6];
   dSetZero(body1_vel, 6);
   dSetZero(body2_vel, 6);
-  dxBody *const *const bodyend = body + nb;
-  for (dxBody *const *bodycurr = body; bodycurr != bodyend; bodycurr++, bodycounter++)
+  for (int k = 0; k < 3; ++k)
   {
-    dxBody *b_ptr = *bodycurr;
-    // first direction
     if (b1 >= 0)
     {
-      if (bodycounter == b1)
-      {
-        for (ivel = 0; ivel < 3; ivel++)
-        {
-          body1_vel[ivel] = b_ptr->lvel[ivel];
-          body1_vel[ivel+3] = b_ptr->avel[ivel];
-        }
-      }
+      body1_vel[k] = body[b1]->lvel[k];
+      body1_vel[k+3] = body[b1]->avel[k];
     }
     if (b2 >= 0)
     {
-      if (bodycounter == b2)
-      {
-        for (ivel = 0; ivel < 3; ivel++)
-        {
-          body2_vel[ivel] = b_ptr->lvel[ivel];
-          body2_vel[ivel+3] = b_ptr->avel[ivel];
-        }
-      }
+      body2_vel[k] = body[b2]->lvel[k];
+      body2_vel[k+3] = body[b2]->avel[k];
     }
   }
-  //startRow, nRows;
-  int previndex, nextindex, prev_constraint_index, next_constraint_index;
-  if (i == startRow)
-  {
-    prev_constraint_index = -100;
-    nextindex = order[i+1].index;
-    next_constraint_index = findex[nextindex];
-  }
-  else if (i == startRow+nRows-1)
-  {
-    previndex = order[i-1].index;
-    prev_constraint_index = findex[previndex];
-    next_constraint_index = -100;
-  }
-  else
-  {
-    previndex = order[i-1].index;
-    nextindex = order[i+1].index;
-    prev_constraint_index = findex[previndex];
-    next_constraint_index = findex[nextindex];
-  }
 
-  // use previndex and nextindex to see if this is part of the same
-  // contact constraint.  The problem is that with torsional friction,
-  // there are 3 consecutive constraints sharing the same constraint index.
-  // But we want to ignore anything to do with the third torsional
-  // friction constraint row here.
-  // So we need to check against previous constraint row first:
-  if (constraint_index == prev_constraint_index)
-  {
-    dRealPtr J_prev_ptr =  J_orig + index*12 - 12;
-    v_f1 = quickstep::dot6(J_prev_ptr, body1_vel) + quickstep::dot6(J_prev_ptr+6, body2_vel);
-    v_f2 = quickstep::dot6(J_orig_ptr, body1_vel) + quickstep::dot6(J_orig_ptr+6, body2_vel);
-  }
-  else if (constraint_index == next_constraint_index)
-  {
-    // body1 was always the 1st body in the body pair
-    dRealPtr J_next_ptr =  J_orig + index*12 + 12;
-    v_f1 = quickstep::dot6(J_orig_ptr, body1_vel) + quickstep::dot6(J_orig_ptr+6, body2_vel);
-    v_f2 = quickstep::dot6(J_next_ptr, body1_vel) + quickstep::dot6(J_next_ptr+6, body2_vel);
-  }
-  else
-  {
-    dMessage (d_ERR_LCP, "constraint index error");
-  }
-
-
-  v = sqrt(v_f1*v_f1 + v_f2*v_f2);
+  // J_orig is unscaled; the solver's J has already been scaled by Ad.
+  dRealPtr J_f1 = J_orig + (constraint_index+1)*12;
+  dRealPtr J_f2 = J_orig + (constraint_index+2)*12;
+  const dReal v_f1 = quickstep::dot6(J_f1, body1_vel) +
+                    quickstep::dot6(J_f1+6, body2_vel);
+  const dReal v_f2 = quickstep::dot6(J_f2, body1_vel) +
+                    quickstep::dot6(J_f2+6, body2_vel);
+  const dReal v = sqrt(v_f1*v_f1 + v_f2*v_f2);
   if (dFabs(v) < 1e-18)
   {
-    hi_act = 0.0; lo_act = 0.0;
+    // Preserve the existing cone model's zero-slip rule; all outputs must
+    // nevertheless be initialized, including the inline ERP bounds.
+    return;
   }
-  else
+
+  const dReal ratio = dFabs(tangent == 1 ? v_f1 : v_f2) / v;
+  hi_act = ratio * dFabs(hi[index] * lambda[constraint_index]);
+  lo_act = -hi_act;
+  // The threaded position-correction path has no inline ERP solution.
+  if (lambda_erp)
   {
-    if (constraint_index == prev_constraint_index)
-    {
-      // second-direction  ---> corresponds to the secondary friction direction
-      hi_act = (dFabs(v_f2) / v) * dFabs (hi[index] * lambda[constraint_index]);
-      lo_act = -hi_act;
-      hi_act_erp = (dFabs(v_f2) / v) * dFabs (hi[index] * lambda_erp[constraint_index]);
-      lo_act_erp = -hi_act;
-    }
-    else if (constraint_index == next_constraint_index)
-    {
-      // first direction  ---> corresponds to the primary friction direction
-      hi_act = (dFabs(v_f1) / v) * dFabs (hi[index] * lambda[constraint_index]);
-      lo_act = -hi_act;
-      hi_act_erp = (dFabs(v_f1) / v) * dFabs (hi[index] * lambda_erp[constraint_index]);
-      lo_act_erp = -hi_act;
-    }
-    else
-    {
-      dMessage (d_ERR_LCP, "constraint index error");
-    }
-  } // if-else (abs(v)< eps)
+    hi_act_erp = ratio * dFabs(hi[index] * lambda_erp[constraint_index]);
+    lo_act_erp = -hi_act_erp;
+  }
 }
 
 size_t quickstep::EstimatePGS_LCPMemoryRequirements(int m,int /*nb*/)
