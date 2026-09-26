@@ -64,3 +64,29 @@ components and contact forces. A historical cone fit against the buggy binary
 is not independent validation of the repaired implementation. Full library
 build/ABI checks, actual source-package correspondence, open-loop holdout response
 and four-car acceptance remain untested until explicit run receipts exist.
+
+## Independent build and contact check, 2026-09-26
+
+The complete bundled ODE shared library was built from the corrected production
+source with Gazebo's own CMake target `gazebo_ode`, Release, in the recorded Focal
+build image (network disabled). `ode_contact_smoke.cpp` links that exact library:
+a moving box drops onto a plane with real collision/contact joints and QuickStep.
+Both cone and pyramid friction pass at 4/2/1 ms over two seconds; all state
+components stay finite and the body settles at z=0.1 m. The 2162 ASan/UBSan
+source regression cases also pass. Source, image and artifact identity are in
+`build-receipt-20260926.json`.
+
+Reproduce after `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF`
+and `cmake --build build --target gazebo_ode -j4`:
+
+```sh
+g++ -std=c++17 test/issue93/ode_contact_smoke.cpp \
+  -Ideps/opende/include -Ibuild/deps/opende/include \
+  -Lbuild/deps/opende -Wl,-rpath,"$PWD/build/deps/opende" -lgazebo_ode \
+  -o build/ode_contact_smoke
+build/ode_contact_smoke
+```
+
+This closes the library-build and basic real-ODE contact path gap. It does not
+claim a complete Gazebo application build, installed-package ABI acceptance,
+vehicle dynamics fidelity, held-out field response or four-vehicle acceptance.
