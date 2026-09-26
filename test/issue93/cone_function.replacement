@@ -1,0 +1,66 @@
+void quickstep::dxConeFrictionModel(dReal& lo_act, dReal& hi_act, dReal& lo_act_erp, dReal& hi_act_erp,
+    int *jb, dRealPtr J_orig, int index, int constraint_index, int /*startRow*/, int /*nRows*/,
+    const int nb, dxBody * const *body, int /*i*/, const IndexError * /*order*/, const int * /*findex*/,
+    dRealPtr /*lo*/, dRealPtr hi, dRealMutablePtr lambda, dRealMutablePtr lambda_erp)
+{
+  // Contact rows are stored as normal,tangent1,tangent2[,torsion]. The PGS
+  // solve order is not their storage order, and a solve chunk may split the
+  // pair. Locate both tangent Jacobians from the normal row, not order[i+/-1].
+  lo_act = hi_act = lo_act_erp = hi_act_erp = 0.0;
+  const int tangent = index - constraint_index;
+  if (constraint_index < 0 || (tangent != 1 && tangent != 2))
+  {
+    dMessage(d_ERR_LCP, "invalid cone friction tangent row");
+    return;
+  }
+
+  const int b1 = jb[index*2];
+  const int b2 = jb[index*2+1];
+  if (b1 < -1 || b1 >= nb || b2 < -1 || b2 >= nb)
+  {
+    dMessage(d_ERR_LCP, "invalid cone friction body index");
+    return;
+  }
+  dReal body1_vel[6];
+  dReal body2_vel[6];
+  dSetZero(body1_vel, 6);
+  dSetZero(body2_vel, 6);
+  for (int k = 0; k < 3; ++k)
+  {
+    if (b1 >= 0)
+    {
+      body1_vel[k] = body[b1]->lvel[k];
+      body1_vel[k+3] = body[b1]->avel[k];
+    }
+    if (b2 >= 0)
+    {
+      body2_vel[k] = body[b2]->lvel[k];
+      body2_vel[k+3] = body[b2]->avel[k];
+    }
+  }
+
+  // J_orig is unscaled; the solver's J has already been scaled by Ad.
+  dRealPtr J_f1 = J_orig + (constraint_index+1)*12;
+  dRealPtr J_f2 = J_orig + (constraint_index+2)*12;
+  const dReal v_f1 = quickstep::dot6(J_f1, body1_vel) +
+                    quickstep::dot6(J_f1+6, body2_vel);
+  const dReal v_f2 = quickstep::dot6(J_f2, body1_vel) +
+                    quickstep::dot6(J_f2+6, body2_vel);
+  const dReal v = sqrt(v_f1*v_f1 + v_f2*v_f2);
+  if (dFabs(v) < 1e-18)
+  {
+    // Preserve the existing cone model's zero-slip rule; all outputs must
+    // nevertheless be initialized, including the inline ERP bounds.
+    return;
+  }
+
+  const dReal ratio = dFabs(tangent == 1 ? v_f1 : v_f2) / v;
+  hi_act = ratio * dFabs(hi[index] * lambda[constraint_index]);
+  lo_act = -hi_act;
+  // The threaded position-correction path has no inline ERP solution.
+  if (lambda_erp)
+  {
+    hi_act_erp = ratio * dFabs(hi[index] * lambda_erp[constraint_index]);
+    lo_act_erp = -hi_act_erp;
+  }
+}
