@@ -1,0 +1,22 @@
+{
+  "source_commit": "fc367fa37c5565e114b2fe9c4b168db833654b21",
+  "builder_image": "ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.0",
+  "builder_id": "sha256:cff656e380b5de2bd3d99b4ba205ec27d84473a89a295537b22c41e24de8afff",
+  "built_target": "gazebo_ode",
+  "library_sha256": "414092a0411e439edafff1197b532b301f2adcffee65678dde115e8fb125878a",
+  "source_regression_cases": 2162,
+  "contact_smoke": {
+    "models": [
+      "pyramid",
+      "cone"
+    ],
+    "steps_s": [
+      0.004,
+      0.002,
+      0.001
+    ],
+    "duration_s": 2.0,
+    "passed": 6
+  },
+  "full_gazebo_runtime_or_physical_acceptance": false
+}
